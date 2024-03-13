@@ -1,0 +1,504 @@
+---
+title: "Expectativa de vida en el mundo"
+
+author: "Fernandez Aragon Agustin, Paszkowski Ivan, Iturraspe Santiago."
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: united
+    highlight: tango
+    df_print: paged
+    code_folding: show
+---
+
+
+
+## Introduccion
+
+Para este trabajo final decidimos analizar un dataset con datos de Global Health Observatory y World Health Organization para modelar como afectan distintas variables a la esperanza de vida. Este dataset consta de 32 variables y alrededor de 3100 observaciones, de todas estas variables decidimos utilizar las cuales considaramos mejores ya sea por cantidad de datos que tenia al dateset sobre ellas o por su importancia.
+
+
+La descripción de cada columna se encuentra en el siguiente link.
+dataset: https://www.kaggle.com/datasets/mmattson/who-national-life-expectancy
+
+
+#Analisis exploratorio
+
+Cargamos las librerias
+```{r message=FALSE, warning=FALSE}
+library(ggplot2)
+library(dplyr)
+library(plyr)
+library(rpart)
+library(rpart.plot)
+library(tidyverse)
+library(reshape2)
+library(Hmisc)
+library(GGally)
+library(rgl)
+```
+
+Cargamos los datos y tomamos las variables que vamos a utilizar
+
+```{r message=FALSE, warning=FALSE}
+datos.raw <- read.csv("who_life_exp.csv",stringsAsFactors = FALSE,)
+
+datos <- subset(datos.raw, select = -c(country_code,hospitals,une_infant,une_life, gni_capita, une_poverty))
+
+
+datos <- datos %>% mutate(pais=country, regionn=region, anio=year, esperanza.de.vida=life_expect, esperanza.60=life_exp60, mortalidad.adulta=adult_mortality,mortalidad.infantil=infant_mort,mortalidad.1a4=age1.4mort, alcoholl=alcohol, bmii=bmi, delgadez.5a19=age5.19thinness, sobrepeso.5a19=age5.19obesity,hepatitiss=hepatitis, sarampion=measles, polioo=polio, difteria=diphtheria,acceso.agua=basic_water,doctores=doctors,gghe.dd=gghe.d,che_gdpp=che_gdp,poblacion=une_pop,HIV = une_hiv,PBI=une_gni,gasto.educacion=une_edu_spend,alfabetismo=une_literacy,escolaridad=une_school)
+
+
+datos <- subset(datos, select = -(1:26))
+names(datos)[names(datos) == "regionn"] <- "region"
+names(datos)[names(datos) == "alcoholl"] <- "alcohol"
+names(datos)[names(datos) == "bmii"] <- "bmi"
+names(datos)[names(datos) == "hepatitiss"] <- "hepatitis"
+names(datos)[names(datos) == "polioo"] <- "polio"
+names(datos)[names(datos) == "gghe.dd"] <- "gasto.salud"
+names(datos)[names(datos) == "che_gdpp"] <- "che_gdp"
+
+
+datos <- subset(datos, select = -c(che_gdp))
+
+for (i in 1:length(datos[,1])){
+  if(datos$region[i]=="Americas"){
+    if(datos$pais[i]=="United States of America"|datos$pais[i]=="Canada"){
+    datos$region[i]<-"Europa"
+  }
+    else{
+      datos$region[i]<-"America Latina"
+    }
+  }
+  if(datos$region[i]=="Europe"){
+    
+    datos$region[i]<-"Europa"
+  }
+  if(datos$region[i]=="Western Pacific"){
+    
+    datos$region[i]<-"Pacifico Oeste"
+  }  
+  if(datos$region[i]=="Eastern Mediterranean"){
+  
+    datos$region[i]<-"Mediterraneo Oriental"
+  }
+  if(datos$region[i]=="South-East Asia"){
+    
+    datos$region[i]<-"Sur-Este Asiatico"
+  }
+}
+
+attach(datos)
+
+```
+
+Una decision que tomamos es juntar a Estados Unidos y Canada con Europa, ya que consideramos que sus condiciones son similares y sino no usaríamos estos datos.
+
+Para ver unos datos de referencia nos fijamos en Argentina del año 2010.
+```{r}
+argentina<-datos %>% filter(pais=="Argentina", anio == 2010)
+
+argentina
+
+```
+
+Separamos los datos por región 
+
+```{r}
+datos.africa <- datos[region=="Africa",]
+datos.latam <- datos[region=="America Latina",]
+datos.noram <- datos[region=="Norte America",]
+datos.em <- datos[region=="Mediterraneo Oriental",]
+datos.euro <- datos[region=="Europa",]
+datos.sea <- datos[region=="Sur-Este Asiatico",]
+datos.wp <- datos[region=="Pacifico Oeste",]
+
+
+```
+
+
+## ¿Como nos aproximamos a las variables?
+
+### Matrices de correlaciones
+
+Luego de ver el dataset y la cantidad de variables que este tenia a pesar de haber hecho un recorte previo, nos surgio la duda de que variables eran pertinentes para nuestro analisis, para esto se nos ocurrio utilizar matrices de correlaciones para ver como estas variables se relacionan entre ellas.
+
+Una matriz de correlacion muestra la relacion que tienen todas las variables entre si. Para esto, calcula un coeficiente dado por la ec.1.
+
+(ec1)$r = \sum \frac{(x-x_m)(y-y_m))}{\sqrt{\sum (x-x_m)^2 \sum (y-y_m)^2}}$
+
+
+Este coeficiente r representa la linealidad de la relación entre las variables, este numero varia entre 1 y -1, mientra mas cercano al 1 este mas relación lineal con pendiente positiva tienen las variables, si es mas cercano al -1 significa que la relacion es con pendiente negativa, y si es mas cercano al 0 significa que la relación no es lineal. 
+
+```{r}
+mycor<- function(x,...){
+  r<- apply(x, 2, function(j){
+    apply(x, 2, function(i){
+      as.numeric(cor.test(i,j)$estimate)
+    })
+  })
+  
+  return(r)
+}
+```
+
+
+
+```{r}
+cormat <- mycor(datos[4:ncol(datos)])
+melted_cormat <- melt(cormat)
+get_lower_tri<-function(cormat){
+  cormat[upper.tri(cormat)] <- NA
+  return(cormat)
+}
+
+ggplot(data = melted_cormat, aes(Var2, Var1, fill = value))+
+ geom_tile(color = "white")+
+ scale_fill_gradient2(low = "aquamarine4", high = "coral1", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+   name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 8, hjust = 1))+
+ coord_fixed() + labs(x = "", y = "")
+```
+
+
+Al ver la primer matriz de correlaciones, vemos como algunas variables como la población no cuentan con ningún tipo de relación lineal, ademas nos surge la duda de ¿Estas relaciones serán iguales en todas las regiones? así que nos disponemos a ver como son separando por regiones, centrándonos en Europa y África ya que como las consideramos polos opuestos esperamos ver mas diferencias.
+
+
+```{r}
+datos.cormat <- subset(datos, select = -c(pais, region, anio, esperanza.60,mortalidad.adulta,mortalidad.infantil,mortalidad.1a4, poblacion))
+
+
+plotcormat <- function(df, size){
+  
+
+cormat <- round(mycor(df),2)
+melted_cormat <- melt(cormat)
+get_lower_tri<-function(cormat){
+  cormat[upper.tri(cormat)] <- NA
+  return(cormat)
+}
+lower_tri <- get_lower_tri(cormat)
+melted_cormat <- melt(lower_tri, na.rm = TRUE)
+
+cormat.plot <- ggplot(data = melted_cormat, aes(Var2, Var1, fill = value))+
+ geom_tile(color = "white")+
+ scale_fill_gradient2(low = "aquamarine4", high = "coral1", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+   name="Pearson\nCorrelation") +
+  theme_minimal()+ 
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 8, hjust = 1))+
+ coord_fixed()
+
+cormat.plot  + 
+geom_text(aes(Var2, Var1, label = value), color = "black", size = size) +
+theme(
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.border = element_blank(),
+  panel.background = element_blank(),
+  axis.ticks = element_blank(),
+  legend.justification = c(0, 1),
+  legend.position = c(0.7, 0.6),
+  legend.direction = "horizontal")+
+  guides(fill = guide_colorbar(barwidth = 7, barheight = 1,
+                title.position = "top", title.hjust = 0.5))
+}
+
+
+```
+
+Decidimos clasificar las variables en dos tipos, salud y educación. 
+```{r}
+datos.salud <- subset(datos.cormat, select = -c(escolaridad, alfabetismo, gasto.educacion, doctores, acceso.agua))
+datos.educacion <- subset(datos.cormat, select = c(esperanza.de.vida,escolaridad, alfabetismo, gasto.educacion,PBI, doctores))
+```
+
+
+Sacamos las variables con poca relación lineal
+```{r}
+plotcormat(datos.cormat,2)
+```
+
+
+### Separamos por región 
+
+```{r}
+plotcormat(datos.cormat[datos$region=='Africa',],2) + ggtitle('Africa')
+```
+
+
+```{r}
+plotcormat(datos.cormat[datos$region=='Europa',],2) + ggtitle('Europa')
+```
+Al ver estos dos gráficos, ya observamos como en Europa la mayoría de variables apenas tienen una relación lineal entre si, en cambio, en África parecen tener mayor relación. Para ver como se comporta por separado cada clasificación las graficamos por su parte.
+
+### Separamos por categoria
+
+```{r}
+plotcormat(datos.salud[datos$region=='Africa',],2.5) + ggtitle('Salud en Africa')
+```
+
+```{r}
+plotcormat(datos.salud[datos$region=='Europa',],2.5) + ggtitle('Salud en Europa')
+```
+
+```{r}
+plotcormat(datos.educacion[datos$region=='Africa',],3) + ggtitle('Educacion en Africa')
+```
+
+```{r}
+plotcormat(datos.educacion[datos$region=='Europa',],3) + ggtitle('Educacion en Europa')
+```
+
+En ambos casos sucede lo mismo, las variables en Europa tienden a tener menor relación lineal exceptuando el PBI, el gasto en salud, la delgadez y alguna que otra mas. Suponemos que esto sucede porque un buen porcentaje de los países europeo ya tiene cubiertas las otras necesidades y entonces no representa bien que sucede cuando, por ejemplo, tenes mayor indice de escolaridad.
+
+## Graficamos
+
+Ahora decidimos hacer unos gráficos de algunas de las variables que encontramos que tienen mejor coeficiente de pearson para ver como se comportan
+
+
+```{r}
+ggplot(data = datos.euro, aes(x = PBI, y = esperanza.de.vida)) + geom_point(aes(color = pais)) + ggtitle("Europa (paises en color)") + theme(legend.position="none")
+
+ggplot(data = datos.euro, aes(x = gasto.salud, y = esperanza.de.vida)) + geom_point(aes(color = pais)) + ggtitle("Europa (paises en color)") + theme(legend.position="none")
+
+ggplot(data = datos.euro, aes(x = sobrepeso.5a19, y = esperanza.de.vida)) + geom_point(aes(color = pais)) + ggtitle("Europa (paises en color)") + theme(legend.position="none")
+
+ggplot(data = datos.euro, aes(x = delgadez.5a19, y = esperanza.de.vida)) + geom_point(aes(color = pais)) + ggtitle("Europa (paises en color)") + theme(legend.position="none")
+```
+
+Una cosa que nos parece importante de mostrar en este gráfico es que en el análisis que estamos realizando se pueden observar 2 tipos de relaciones, la relación que tiene cada país con el pasar del tiempo y la relación entre países. Sabemos que esto es un error ya que estamos mezclando dos cosas en una, pero al intentar dejar el tiempo de lado, ya sea considerando un año solo o haciendo el promedio de todos los valores para deshacernos del tiempo, notamos que nos quedamos con muy pocos datos y muchas variables quedaban inusables, por esta razón decidimos continuar con todos los datos. 
+
+
+
+## Modelado
+
+Ahora que sabemos cuales variables tienen un comportamiento lineal con la esperanza de vida agarramos las cuatro mejores de cada continente para hacer una regresión lineal con todas las combinaciones entre ellas para así encontrar la regresión con menor error y ver que tan significativas son estas variables en cada una de las regiones.
+
+```{r}
+subdatos <- datos %>% filter(region == "Africa") %>% select(esperanza.de.vida,
+                                                               doctores,
+                                                               difteria,
+                                                               acceso.agua,
+                                                               sobrepeso.5a19) %>% na.omit()
+
+
+N   <- nrow(subdatos)
+p   <- 0.8
+ind <- sample(1:N, round(p*N), replace = F)
+
+subdatos.train <- subdatos[ind,]
+subdatos.test  <- subdatos[-ind,]
+
+
+subdatos2 <- datos %>% filter(region == "Europa") %>% select(esperanza.de.vida,
+                                                               gasto.salud,
+                                                               PBI,
+                                                               delgadez.5a19,
+                                                               sobrepeso.5a19) %>% na.omit()
+
+N2   <- nrow(subdatos2)
+p2  <- 0.8
+ind2 <- sample(1:N2, round(p2*N2), replace = F)
+
+subdatos2.train <- subdatos2[ind2,]
+subdatos2.test  <- subdatos2[-ind2,]
+
+
+```
+
+
+
+```{r}
+
+powerset = function(s){#algoritmo que calcula el conjunto de partes (power set)
+    len = length(s)
+    l = vector(mode="list",length=2^len) ; l[[1]]=numeric()
+    counter = 1L
+    for(x in 1L:length(s)){
+        for(subset in 1L:counter){
+            counter=counter+1L
+            l[[counter]] = c(l[[subset]],s[x])
+        }
+    }
+    return(l)
+}
+#lm(Precio ~.,data=datos2d[,c(1,partes[[i]]+1)])
+#print(lm.fit(y=Precio,x=matriz.obs[,partes[[2]]])[1])
+```
+
+
+### Barplot de error del LM en Africa  
+
+```{r}
+matriz.combinaciones<-matrix(NA,15,1)#inicializo matriz donde pondre los valores
+filas<-rep("a",15)#indice de la matriz
+partes<-powerset(c(1,2,3,4))#todas las formas de combinar los indices 1 2 3 4
+
+prediccion<-rep(NA,15)
+datos.col<-(c("Esp.vida","Doctores","Difteria","Agua","Obesidad5-19"))
+ind = 2
+for(ind in 2:16){#indexo lm con partes del conjunto
+    ajus.cv<-lm(esperanza.de.vida ~.,data=subdatos.train[,c(1,partes[[ind]]+1)])
+    prediccion<-predict(ajus.cv,newdata=subdatos.test)
+  
+    #asigno indice y valor a la matriz
+  filas[ind-1]<-paste(datos.col[partes[[ind]]+1],collapse = ' ')
+  matriz.combinaciones[ind-1]<-(mean(abs(subdatos.test$esperanza.de.vida-prediccion)))
+  row.names(matriz.combinaciones)<-filas
+}
+
+#matriz ordenada
+matriz.combinaciones[order(matriz.combinaciones), ,drop = FALSE]
+
+aaa <- as.data.frame(matriz.combinaciones)
+aaa$nombre <- filas
+
+predictbase1 <- predict(lm(data = subdatos.train, esperanza.de.vida~1),newdata = subdatos.test)
+
+casoBase1 <- mean(abs(subdatos.test$esperanza.de.vida-predictbase1))
+
+aaa <- rbind(aaa,c(casoBase1,"Caso Base"))
+
+aaa$V1 <- as.numeric(aaa$V1)
+
+par(mar=c(3,18,1,1))
+barplot(aaa[order(aaa$V1),]$V1,  names = aaa[order(aaa$V1),]$nombre, las = 1, horiz = TRUE, col="coral1", main = "Africa")
+
+```
+
+
+
+
+### Barplot de error del LM en Europa 
+
+```{r}
+matriz.combinaciones<-matrix(NA,15,1)#inicializo matriz donde pondre los valores
+filas<-rep("a",15)#indice de la matriz
+partes<-powerset(c(1,2,3,4))#todas las formas de combinar los indices 1 2 3 4
+
+prediccion<-rep(NA,15)
+datos.col<-(c("Esp.vida","Gasto Salud","PBI","Delgadez5-19","Obesidad5-19"))
+ind = 2
+for(ind in 2:16){#indexo lm con partes del conjunto
+    ajus.cv<-lm(esperanza.de.vida ~.,data=subdatos2.train[,c(1,partes[[ind]]+1)])
+    prediccion<-predict(ajus.cv,newdata=subdatos2.test)
+  
+    #asigno indice y valor a la matriz
+  filas[ind-1]<-paste(datos.col[partes[[ind]]+1],collapse = ' ')
+  matriz.combinaciones[ind-1]<-(mean(abs(subdatos2.test$esperanza.de.vida-prediccion)))
+  row.names(matriz.combinaciones)<-filas
+}
+
+#matriz ordenada
+matriz.combinaciones[order(matriz.combinaciones), ,drop = FALSE]
+
+aaa <- as.data.frame(matriz.combinaciones)
+aaa$nombre <- filas
+
+predictbase2 <- predict(lm(data = subdatos2.train, esperanza.de.vida~1),newdata = subdatos2.test)
+
+casoBase2 <- mean(abs(subdatos2.test$esperanza.de.vida-predictbase2))
+
+aaa <- rbind(aaa,c(casoBase2,"Caso Base"))
+
+aaa$V1 <- as.numeric(aaa$V1)
+
+
+par(mar=c(3,19,1,1))
+barplot(aaa[order(aaa$V1),]$V1,  names = aaa[order(aaa$V1),]$nombre, las = 1, horiz = TRUE, col="coral1", xlim = c(0,5), main = "Europa")
+
+```
+
+
+Nos fijamos los coeficientes del mejor modelo encontrado.
+
+```{r}
+ajusAfrica<- lm(data = subdatos.train, esperanza.de.vida~doctores+difteria+sobrepeso.5a19)
+coef(ajusAfrica)
+
+
+
+ajusEU <- lm(data = subdatos2.train, esperanza.de.vida~gasto.salud+sobrepeso.5a19+delgadez.5a19+PBI)
+coef(ajusEU)
+```
+
+### Ejemplo de como se comporta el Ajuste
+
+```{r}
+subdatos2.test[28,2]<-1.3#gasto salud real
+prediccion<-predict(ajusEU,newdata=subdatos2.test)
+pruebaz<-datos %>% filter(region=="Europa")
+```
+
+Tomamos un dato de ejemplo de Turkmenistán:
+
+```{r}
+pruebaz[170,]
+```
+
+La predicción que hace nuestro ajuste:
+
+```{r}
+prediccion[28]#esperanza de vida predicha 
+```
+
+Por ejemplo Turkmenistán, nuestro modelo predice con un error de menos de dos años la esperanza de vida de Turkmenistán, pero si modificásemos sus datos para mejorar en alguna variable podríamos ver en cuanto mejoraría su esperanza de vida
+
+```{r}
+subdatos2.test[28,2]<-3
+prediccion<-predict(ajusEU,newdata=subdatos2.test)
+prediccion[28]#esperanza de vida predicha con el gasto salud aumentado
+#la esperanza de vida aumenta en 1.5 años aumentando el gasto salud
+```
+
+La esperanza de vida aumenta en 1.5 años aumentando el gasto salud
+
+
+### Clasificación por arbol de decisiones
+
+
+Otra forma de aproximar esta situación es realizando un árbol de decisiones, y nos pareció interesante ver como eran estos al trabajar con las mismas variables del mejor ajuste encontrado para ver, según este método, cual de estas era la mas determinante. Para esto, determinamos tres categorías para la esperanza de vida, Mala, Media y Buena, las cuales están separadas por los cuartiles.
+
+```{r}
+quantil1<-summary(datos$esperanza.de.vida)[2]
+quantil3<-summary(datos$esperanza.de.vida)[5]
+
+subdatos1a<-subdatos %>% mutate(categoria=cut(esperanza.de.vida, breaks=c(-Inf, quantil1, quantil3, Inf),labels=c("Mala EdV","Media EdV","Buena EdV")))
+
+rpart.plot(rpart(categoria ~doctores + difteria + acceso.agua + sobrepeso.5a19, data= subdatos1a, method="class", control = list(maxdepth = 2)), main = "Arbol de decisiones Africa")
+
+```
+En el árbol de África se puede ver, como al igual que en la regresión lineal, que la variable de mayor importancia, o que mas determina la esperanza de vida es la cantidad de doctores.
+
+```{r}
+subdatos2a<-subdatos2 %>% mutate(categoria=cut(esperanza.de.vida, breaks=c(-Inf, quantil1, quantil3, Inf),labels=c("Mala EdV","Media EdV","Buena EdV")))
+
+rpart.plot(rpart(categoria ~ sobrepeso.5a19 + gasto.salud + PBI + delgadez.5a19, data= subdatos2a, method="class"), main = "Arbol de decisiones Europa")
+```
+Ademas vemos como en Europa a partir de una cierta cantidad de PBI tu esperanza de vida pasa de ser media a buena.
+
+## Conclusiones 
+
+En este trabajo nos dispusimos a intentar predecir la esperanza de vida en África y Europa, al haber seleccionado dos continentes muy diferentes entre si, vimos como las variables que contenía nuestro dataset, se comportaban de manera diferente dependiendo de la región a la que observemos, para resolver este problema, separamos nuestro análisis según la región y clasificación (Educación y Salud), al hacer esto vimos que tipo de relación tenia cada variable con la esperanza de vida, para así, seleccionar a las variables las cuales creímos que iban a resultar mejor en un modelo lineal, al aplicar todo esto pudimos encontrar un modelo para los continentes de Europa y África que aproximan la esperanza de vida con una precisión (aproximadamente) 2 veces mayor al caso base en caso de Europa y 1.5 veces mayor al caso de África.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
